@@ -5,7 +5,8 @@ from __future__ import annotations
 import io
 from typing import TYPE_CHECKING
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+
 from rdkit import Chem
 from rdkit.Chem import Draw
 
@@ -25,54 +26,6 @@ if TYPE_CHECKING:
     FrameColors = Optional[Dict[bool, PilColor]]
     from PIL.Image import Image as PilImage
 
-
-def molecule_to_image(
-    mol: Chem.rdchem.Mol, frame_color: PilColor, size: int = 300
-) -> PilImage:
-    """
-    Create a pretty image of a molecule,
-    with a colored frame around it
-
-    :param mol: the molecule
-    :param frame_color: the color of the frame
-    :param size: the size of the image
-    :return: the produced image
-    """
-    img = Draw.MolToImage(mol, size=(size, size))
-    cropped_img = crop_image(img)
-    return draw_rounded_rectangle(cropped_img, frame_color)
-
-
-def molecules_to_images(
-    mols: Sequence[Chem.rdchem.Mol],
-    frame_colors: Sequence[PilColor],
-    size: int = 300,
-) -> List[PilImage]:
-    """
-    Create pretty images of molecules with a colored frame around each one of them.
-
-    The molecules will be resized to be of similar sizes.
-
-    :param smiles_list: the molecules
-    :param frame_colors: the color of the frame for each molecule
-    :param size: the sub-image size
-    :return: the produced images
-    """
-    all_mols = Draw.MolsToGridImage(
-        mols,
-        molsPerRow=len(mols),
-        subImgSize=(size, size),
-    )
-    if not hasattr(all_mols, "crop"):  # Is not a PIL image
-        fileobj = io.BytesIO(all_mols.data)
-        all_mols = Image.open(fileobj)
-
-    images = []
-    for idx, frame_color in enumerate(frame_colors):
-        image_obj = all_mols.crop((size * idx, 0, size * (idx + 1), size))
-        image_obj = crop_image(image_obj)
-        images.append(draw_rounded_rectangle(image_obj, frame_color))
-    return images
 
 
 def crop_image(img: PilImage, margin: int = 20) -> PilImage:
@@ -145,6 +98,62 @@ def draw_rounded_rectangle(
     return copy
 
 
+def molecule_to_image(
+    mol: Chem.rdchem.Mol, frame_color: PilColor, size: int = 300, text: str = ""
+) -> PilImage:
+    img = Draw.MolToImage(mol, size=(size, size))
+    cropped_img = crop_image(img)
+    img = draw_rounded_rectangle(cropped_img, frame_color)
+
+    if len(text)>0:
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.truetype("Arial.ttf", 12)
+        except IOError:
+            font = ImageFont.load_default()
+        text_width, text_height = draw.textsize(text, font=font)
+        text_position = ((img.width - text_width) // 2, img.height - text_height - 10)  # Bottom-center text
+        draw.text(text_position, text, fill="black", font=font)
+
+    return img
+
+def molecules_to_images(
+    mols: Sequence[Dict[str, Any]],
+    frame_colors: Sequence[PilColor],
+    size: int = 300,
+) -> List[PilImage]:
+    all_mols = Draw.MolsToGridImage(
+        [mol_data['mol'] for mol_data in mols],
+        molsPerRow=len(mols),
+        subImgSize=(size, size),
+    )
+    if not hasattr(all_mols, "crop"):  # Is not a PIL image
+        fileobj = io.BytesIO(all_mols.data)
+        all_mols = Image.open(fileobj)
+
+    images = []
+    for idx, mol_data in enumerate(mols):
+        frame_color = frame_colors[idx]
+        text = mol_data['text']
+        image_obj = all_mols.crop((size * idx, 0, size * (idx + 1), size))
+        image_obj = crop_image(image_obj)
+        image_obj = draw_rounded_rectangle(image_obj, frame_color)
+        
+        if len(text)>0:
+            draw = ImageDraw.Draw(image_obj)
+            try:
+                font = ImageFont.truetype("arial.ttf", 18)
+            except IOError:
+                font = ImageFont.load_default()
+            (x1,y1,x2,y2) = font.getbbox(text)
+            text_width, text_height = (x2-x1, y2-y1)
+            text_position = ((image_obj.width - text_width) // 2, image_obj.height - text_height-4)  # Bottom-center text
+            draw.text(text_position, text, fill="red", font=font)
+        
+        images.append(image_obj)
+
+    return images
+
 class RouteImageFactory:
     """
     Factory class for drawing a route
@@ -170,13 +179,13 @@ class RouteImageFactory:
         self.margin: int = margin
 
         self._stock_lookup: Dict[str, Any] = {}
-        self._mol_lookup: Dict[str, Any] = {}
+        self._mol_lookup: List[Dict[str, Any]] = []
         self._extract_molecules(route)
         images = molecules_to_images(
-            list(self._mol_lookup.values()),
-            [in_stock_colors[val] for val in self._stock_lookup.values()],
+            self._mol_lookup,
+            [in_stock_colors[mol_data['in_stock']] for mol_data in self._mol_lookup]
         )
-        self._image_lookup = dict(zip(self._mol_lookup.keys(), images))
+        self._image_lookup = {mol_data['smiles']: img for mol_data, img in zip(self._mol_lookup, images)}
 
         self._mol_tree = self._extract_mol_tree(route)
         self._add_effective_size(self._mol_tree)
@@ -265,10 +274,12 @@ class RouteImageFactory:
 
     def _extract_molecules(self, tree_dict: Dict[str, Any]) -> None:
         if tree_dict["type"] == "mol":
-            self._stock_lookup[tree_dict["smiles"]] = tree_dict.get("in_stock", False)
-            self._mol_lookup[tree_dict["smiles"]] = Chem.MolFromSmiles(
-                tree_dict["smiles"]
-            )
+            self._mol_lookup.append({
+                "smiles": tree_dict["smiles"],
+                "mol": Chem.MolFromSmiles(tree_dict["smiles"]),
+                "text": tree_dict.get("text", ""),
+                "in_stock": tree_dict.get("in_stock", False)
+            })
         for child in tree_dict.get("children", []):
             self._extract_molecules(child)
 

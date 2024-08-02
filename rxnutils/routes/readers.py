@@ -112,10 +112,11 @@ def reactions2route(
     :returns: the created trees
     """
 
-    def make_dict(product_smiles):
+    def make_dict(product_smiles, product_text=""):
         dict_ = {
             "type": "mol",
             "smiles": product_smiles,
+            "text": product_text
         }
         product_inchi = smiles2inchikey(product_smiles, ignore_stereo=True)
         reaction = product2reaction.get(product_inchi)
@@ -126,11 +127,14 @@ def reactions2route(
                 + ">>"
                 + reaction["product"]
             )
+            reaction_texts = metadata.get("text", "").split(">>")
             dict_["children"] = [
                 {
                     "type": "reaction",
                     "metadata": metadata,
-                    "children": [make_dict(smiles) for smiles in reaction["reactants"]],
+                    "children": [
+                        make_dict(smiles, text) for smiles, text in zip(reaction["reactants"], reaction_texts[0].split("."))
+                    ],
                 }
             ]
         return dict_
@@ -166,7 +170,9 @@ def reactions2route(
         )
 
     target_inchi = list(only_products)[0]
-    return SynthesisRoute(make_dict(inchi_map[target_inchi]))
+    target_meta = product2reaction[target_inchi]["metadata"]
+    target_text = target_meta.get("text", "").split(">>")[-1]
+    return SynthesisRoute(make_dict(inchi_map[target_inchi], target_text))
 
 
 def _transform_retrosynthesis_atom_mapping(tree_dict: Dict[str, Any]) -> None:
