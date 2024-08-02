@@ -33,6 +33,8 @@ Consult the documentation for further information.
 
 First clone the repository using Git.
 
+for arm64: some deps are moved from poetry to env-dev.yml 
+
 Then execute the following commands in the root of the repository
 
     conda env create -f env-dev.yml
